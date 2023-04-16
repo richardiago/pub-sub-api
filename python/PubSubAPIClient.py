@@ -10,45 +10,61 @@ import avro.io
 import time
 import certifi
 import json
-
-semaphore = threading.Semaphore(1)
-latest_replay_id = None
+import os
 
 def fetchReqStream(topic):
     while True:
         semaphore.acquire()
-        yield pb2.FetchRequest(
-            topic_name = topic,
-            replay_preset = pb2.ReplayPreset.LATEST,
-            num_requested = 1)
-        
+        yield pb2.FetchRequest(topic_name = topic, replay_preset = pb2.ReplayPreset.LATEST, num_requested = 1)
 
 def decode(schema, payload):
-  schema = avro.schema.parse(schema)
-  buf = io.BytesIO(payload)
+  
+  schema  = avro.schema.parse(schema)
+  buf     = io.BytesIO(payload)
   decoder = avro.io.BinaryDecoder(buf)
-  reader = avro.io.DatumReader(schema)
-  ret = reader.read(decoder)
+  reader  = avro.io.DatumReader(schema)
+  ret     = reader.read(decoder)
+
   return ret
 
+def getSalesforceOAuthInfo():
+
+    auth_url = os.environ['SALESFORCE_AUTH_URL']
+    auth_data = {
+        'grant_type': 'password',
+        'client_id': os.environ['SALESFORCE_CLIENT_ID'],
+        'client_secret': os.environ['SALESFORCE_CLIENT_SECRET'],
+        'username': os.environ['SALESFORCE_USERNAME'],
+        'password': os.environ['SALESFORCE_PASSWORD']
+    }
+
+    auth_response = requests.post(auth_url, data=auth_data)
+    auth_response_json = auth_response.json()
+
+    sessionid = auth_response_json['access_token']
+    instanceurl = auth_response_json['instance_url']
+    tenantid = auth_response_json['id'].split('/')[4]
+
+    return sessionid, instanceurl, tenantid
+
+
+semaphore = threading.Semaphore(1)
+latest_replay_id = None
 
 with open(certifi.where(), 'rb') as f:
     creds = grpc.ssl_channel_credentials(f.read())
 
 with grpc.secure_channel('api.pubsub.salesforce.com:7443', creds) as channel:
 
-    sessionid = '00D8b0000020N8y!AQYAQIzAwcJWUa72nZKZPon5zkW0MiTqaoX_.ZWOC7eLYXahceFKo7kefYOorelsqxN55fj6o2oPBDob2dwU80AwaNc7ILbN'
-    instanceurl = 'https://resourceful-badger-a8o4n1-dev-ed.trailblaze.my.salesforce.com'
-    tenantid = '00D8b0000020N8yEAE'
+    sessionid, instanceurl, tenantid = getSalesforceOAuthInfo()
 
     authmetadata = (('accesstoken', sessionid), ('instanceurl', instanceurl), ('tenantid', tenantid))
 
     stub = pb2_grpc.PubSubStub(channel)
 
-    mysubtopic = "/event/Nebula__LogEntryEvent__e"
+    mysubtopic = os.environ['SALESFORCE_EVENT']
     print('Subscribing to ' + mysubtopic)
     substream = stub.Subscribe(fetchReqStream(mysubtopic), metadata=authmetadata)
-
 
     for event in substream:
 
@@ -66,4 +82,3 @@ with grpc.secure_channel('api.pubsub.salesforce.com:7443', creds) as channel:
             print("[", time.strftime('%b %d, %Y %l:%M%p %Z'), "] The subscription is active.")
 
     latest_replay_id = event.latest_replay_id
-    
