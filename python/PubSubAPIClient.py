@@ -12,6 +12,8 @@ import certifi
 import json
 import os
 
+semaphore = threading.Semaphore(1)
+
 def fetchReqStream(topic):
     while True:
         semaphore.acquire()
@@ -48,37 +50,42 @@ def getSalesforceOAuthInfo():
     return sessionid, instanceurl, tenantid
 
 
-semaphore = threading.Semaphore(1)
-latest_replay_id = None
+def pubSubClient():
 
-with open(certifi.where(), 'rb') as f:
-    creds = grpc.ssl_channel_credentials(f.read())
+    # semaphore = threading.Semaphore(1)
+    latest_replay_id = None
 
-with grpc.secure_channel('api.pubsub.salesforce.com:7443', creds) as channel:
+    with open(certifi.where(), 'rb') as f:
+        creds = grpc.ssl_channel_credentials(f.read())
 
-    sessionid, instanceurl, tenantid = getSalesforceOAuthInfo()
+    with grpc.secure_channel('api.pubsub.salesforce.com:7443', creds) as channel:
 
-    authmetadata = (('accesstoken', sessionid), ('instanceurl', instanceurl), ('tenantid', tenantid))
+        sessionid, instanceurl, tenantid = getSalesforceOAuthInfo()
 
-    stub = pb2_grpc.PubSubStub(channel)
+        authmetadata = (('accesstoken', sessionid), ('instanceurl', instanceurl), ('tenantid', tenantid))
 
-    mysubtopic = os.environ['SALESFORCE_EVENT']
-    print('Subscribing to ' + mysubtopic)
-    substream = stub.Subscribe(fetchReqStream(mysubtopic), metadata=authmetadata)
+        stub = pb2_grpc.PubSubStub(channel)
 
-    for event in substream:
+        mysubtopic = os.environ['SALESFORCE_EVENT']
+        print('Subscribing to ' + mysubtopic)
+        substream = stub.Subscribe(fetchReqStream(mysubtopic), metadata=authmetadata)
 
-        if event.events:
+        for event in substream:
 
-            semaphore.release()
-            print("Number of events received: ", len(event.events))
-            payloadbytes = event.events[0].event.payload
-            schemaid = event.events[0].event.schema_id
-            schema = stub.GetSchema(pb2.SchemaRequest(schema_id=schemaid), metadata=authmetadata).schema_json
-            decoded = decode(schema, payloadbytes)
-            print("Got an event!", json.dumps(decoded))
+            if event.events:
 
-        else:
-            print("[", time.strftime('%b %d, %Y %l:%M%p %Z'), "] The subscription is active.")
+                semaphore.release()
+                print("Number of events received: ", len(event.events))
+                payloadbytes = event.events[0].event.payload
+                schemaid = event.events[0].event.schema_id
+                schema = stub.GetSchema(pb2.SchemaRequest(schema_id=schemaid), metadata=authmetadata).schema_json
+                decoded = decode(schema, payloadbytes)
+                print("Got an event!", json.dumps(decoded))
 
-    latest_replay_id = event.latest_replay_id
+            else:
+                print("[", time.strftime('%b %d, %Y %l:%M%p %Z'), "] The subscription is active.")
+
+        latest_replay_id = event.latest_replay_id
+
+def lambda_handler(event, context):
+    pubSubClient()
